@@ -58,7 +58,7 @@ def get_file_types(data_dir: str,
         if prefix:
             groups.add(prefix)
     result = sorted(groups)
-    _get_logger(logger).debug(f"Found {len(result)} file types in {data_dir}")
+    _get_logger(logger).debug(f"Found {len(result):,} file types in {data_dir}")
     return result
 
 def peak_columns(fp: str, sheet_name: Optional[str] = None,
@@ -136,7 +136,11 @@ def get_files(data_dir: str, file_type: str, batch: Optional[int] = None,
                 break  # prevents double matching
 
     result = sorted(found_files)
-    _get_logger(logger).debug(f"Found {len(result)} {file_type} files in {data_dir}")
+    log = _get_logger(logger)
+    if log.isEnabledFor(logging.DEBUG):
+        disk_mb = sum(os.path.getsize(file) for file in result) / 1024**2
+        log.debug(f"Found {len(result):,} {file_type} files in {data_dir} "
+                  f"({disk_mb:,.1f} MB on disk)")
     return result
 
 def load_df(files: str | Collection[str], 
@@ -183,7 +187,6 @@ def load_df(files: str | Collection[str],
 
         def read_chunks() -> Iterator[pd.DataFrame]:
             for file in files:
-                log.debug(f"Reading {file}")
                 if file.endswith((".csv", ".csv.gz")):
                     chunks = pd.read_csv(file, usecols=usecols, chunksize=chunk_size,
                                          low_memory=False)
@@ -194,14 +197,25 @@ def load_df(files: str | Collection[str],
                 else:
                     raise ValueError(f"Unsupported file: {file}")
 
-                for df in chunks:
+                chunk_number = 0
+                rows_loaded = 0
+                for chunk_number, df in enumerate(chunks, start=1):
                     if parse_dates:
                         for dt_col in parse_dates:
                             df[dt_col] = pd.to_datetime(df[dt_col], errors="coerce", utc=True)
 
                     if callable(filter_func):
                         df = filter_func(df)
+                    rows_loaded += len(df)
+                    if chunk_number % 10 == 0 and log.isEnabledFor(logging.DEBUG):
+                        memory_mb = df.memory_usage(index=True, deep=True).sum() / 1024**2
+                        log.debug(f"Loaded {chunk_number:,} chunks and {rows_loaded:,} rows from {file}; "
+                                  f"latest DataFrame uses {memory_mb:,.1f} MB in memory")
                     yield df
+                if chunk_number and chunk_number % 10 and log.isEnabledFor(logging.DEBUG):
+                    memory_mb = df.memory_usage(index=True, deep=True).sum() / 1024**2
+                    log.debug(f"Loaded {chunk_number:,} chunks and {rows_loaded:,} rows from {file}; "
+                              f"latest DataFrame uses {memory_mb:,.1f} MB in memory")
 
         return read_chunks()
 
@@ -228,7 +242,9 @@ def load_df(files: str | Collection[str],
     if parse_dates:
         for dt_col in parse_dates:
             df[dt_col] = pd.to_datetime(df[dt_col], errors="coerce", utc=True)
-    log.debug(f"Loaded {len(df):,} rows")
+    if log.isEnabledFor(logging.DEBUG):
+        memory_mb = df.memory_usage(index=True, deep=True).sum() / 1024**2
+        log.debug(f"Loaded {len(df):,} rows ({memory_mb:,.1f} MB in memory)")
     return df
 
 
@@ -266,4 +282,4 @@ def write_df(df: pd.DataFrame, write_fp: str,
 
     else:
         raise ValueError(f"Unsupported write_fp: {write_fp}")
-    _get_logger(logger).debug(f"Wrote {len(df)} rows to {write_fp}")
+    _get_logger(logger).debug(f"Wrote {len(df):,} rows to {write_fp}")

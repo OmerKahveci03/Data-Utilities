@@ -64,13 +64,13 @@ def process_file_type(file_type: str,
     os.makedirs(write_dir, exist_ok=True)
     incomplete_outputs: list[str] = get_files(data_dir=write_dir, file_type=file_type, logger=log)
     if incomplete_outputs:
-        log.debug(f"Removing {len(incomplete_outputs)} existing outputs for {file_type}")
+        log.debug(f"Removing {len(incomplete_outputs):,} existing outputs for {file_type}")
         for output_fp in incomplete_outputs:
             os.remove(output_fp)
 
     expected_batches = set(id_to_batch.values())
 
-    log.debug(f"Converting {file_type} from {len(files)} files")
+    log.debug(f"Converting {file_type} from {len(files):,} files")
 
     writers: dict[int, pq.ParquetWriter] = {}
     rows_written: dict[int, int] = {}
@@ -79,7 +79,11 @@ def process_file_type(file_type: str,
     unbatched_writer: Optional[pq.ParquetWriter] = None
     try:
         for file in files:
+            chunks_processed: int = 0
+            rows_processed: int = 0
             for df in load_df(files=file, chunk_size=50_000, logger=log):
+                chunks_processed += 1
+                rows_processed += len(df)
 
                 if batch_by_id not in df.columns:
                     if writers:
@@ -89,7 +93,6 @@ def process_file_type(file_type: str,
                     if unbatched_writer is None:
                         unbatched_writer = pq.ParquetWriter(out_fp, table.schema, compression="snappy")
                     unbatched_writer.write_table(table)
-                    log.debug(f"Wrote {len(df)} rows to {out_fp} without batch identifiers")
 
                     continue
 
@@ -100,7 +103,6 @@ def process_file_type(file_type: str,
                 if df["_batch"].isna().any():
                     raise ValueError(f"{file} contains identifiers absent from the batch lookup")
                 df["_batch"] = df["_batch"].astype("int32")
-                log.debug(f"Mapped {len(df)} rows in {file}")
 
 
                 # Group by _batch then write each batch to the write_dir with the {file_type}_{batch}.parquet naming convention
@@ -129,7 +131,8 @@ def process_file_type(file_type: str,
                     schema = table.schema
                 del df
 
-                log.debug(f"Finished reading {file}")
+            log.debug(f"Finished {file_type}: {chunks_processed:,} chunks, "
+                      f"{rows_processed:,} rows from {os.path.basename(file)}")
         gc.collect()
 
         if unbatched_writer is not None:
@@ -149,8 +152,6 @@ def process_file_type(file_type: str,
             empty_table = pa.Table.from_arrays([pa.array([], type=field.type) for field in schema], schema=schema,)
 
             pq.write_table(empty_table, out_fp, compression="snappy")
-            log.debug(f"Created empty batch file {out_fp}")
-
             rows_written[batch] = 0
 
     finally:

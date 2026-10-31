@@ -108,7 +108,7 @@ def create_batch_lookup_table(data_dir: str,
 
     # --- 3. Write to Disk and Return the Mapping DataFrame ---
     write_df(df=lookup_df, write_fp=lookup_table_fp, logger=log)
-    log.debug(f"Assigned {len(lookup_df)} identifiers to {lookup_df['batch'].nunique()} batches")
+    log.debug(f"Assigned {len(lookup_df):,} identifiers to {lookup_df['batch'].nunique():,} batches")
 
     return lookup_df
 
