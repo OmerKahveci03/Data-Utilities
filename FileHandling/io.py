@@ -30,8 +30,7 @@ def get_file_types(data_dir: str,
     logger: Optional[logging.Logger] (default None)
         Optional logger for debug messages.
     recursive: bool (default False)
-        Search subdirectories and prefix nested types with their
-        immediate parent directory name.
+        Search subdirectories using the source filenames as file types.
 
     Returns
     -------
@@ -49,8 +48,6 @@ def get_file_types(data_dir: str,
         if not file.endswith((".csv", ".csv.gz", ".parquet")):
             continue
         name = re.sub(r"\.(csv(\.gz)?|parquet)$", "", os.path.basename(file))
-        if recursive and os.path.dirname(file) != data_dir:
-            name = f"{os.path.basename(os.path.dirname(file))}_{name}"
         # Split before the first numeric segment
 
         has_batch = bool(re.search(r"_\d+", name))
@@ -89,6 +86,7 @@ def get_files(data_dir: str, file_type: str, batch: Optional[int] = None,
 
     Matches ``<type>_<number>`` and ``<type>_<number>_<number>`` names.
     When ``batch`` is ``None`` or zero, bare ``<type>`` files also match.
+    Recursive searches match source basenames in any subdirectory.
 
     Arguments
     ---------
@@ -101,8 +99,7 @@ def get_files(data_dir: str, file_type: str, batch: Optional[int] = None,
     logger: Optional[logging.Logger] (default None)
         Optional logger for debug messages.
     recursive: bool (default False)
-        Search subdirectories and prefix nested types with their
-        immediate parent directory name.
+        Search subdirectories using the source filenames as file types.
 
     Returns
     -------
@@ -133,8 +130,6 @@ def get_files(data_dir: str, file_type: str, batch: Optional[int] = None,
         if not os.path.isfile(path):
             continue
         fname = os.path.basename(path)
-        if recursive and os.path.dirname(path) != data_dir:
-            fname = f"{os.path.basename(os.path.dirname(path))}_{fname}"
         for pattern in patterns:
             if pattern.match(fname):
                 found_files.append(path)
