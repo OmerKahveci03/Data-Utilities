@@ -3,7 +3,11 @@
 import logging
 import os
 import re
+import sqlite3
+import tempfile
+from collections import Counter
 from concurrent.futures import Future, ProcessPoolExecutor, as_completed
+from contextlib import closing
 from functools import partial
 from typing import Callable, Collection, Iterable, Literal, Optional
 
@@ -27,7 +31,7 @@ def read_dataset_summary(path: str) -> DatasetSummary:
     missing_sheets: list[str] = sorted(set(DATASET_SUMMARY_NAMES) - set(summaries))
     if missing_sheets:
         raise KeyError(f"Dataset summary workbook is missing sheets: {missing_sheets}")
-    return {summary_name: summaries[summary_name] for summary_name in DATASET_SUMMARY_NAMES}
+    return summaries
 
 
 def write_dataset_summary(summary: DatasetSummary, path: str) -> str:
@@ -499,4 +503,100 @@ def summarize_dataset(
         "date": combined["date"],
         "id": combined["id"],
         "numerical": combined["numerical"],
+    }
+
+
+def summarize_distributions(files: Collection[str],
+                            date_columns: Collection[str],
+                            id_summary: pd.DataFrame,
+                            group_by: str | Collection[str] | None = None,
+                            selected_groups: Collection[str] | None = None,
+                            chunk_size: int = 50_000,
+                            temp_dir: str | None = None) -> dict[str, pd.DataFrame]:
+    """Count dates by year and IDs by their number of associated rows.
+
+    Arguments
+    ---------
+    files: Collection[str]
+        Source CSV or Parquet files to scan.
+    date_columns: Collection[str]
+        Columns containing dates to bin by year.
+    id_summary: pd.DataFrame
+        Identifier summary with ``column``, ``non_missing_count``, and
+        ``unique_count``. Columns with one row per ID need no rescan.
+    group_by: str | Collection[str] | None (default None)
+        Grouping columns for date histograms.
+    selected_groups: Collection[str] | None (default None)
+        Group labels retained by the dataset summary.
+    chunk_size: int (default 50000)
+        Maximum rows loaded at a time.
+    temp_dir: str | None (default None)
+        Parent directory for the temporary ID count database.
+
+    Returns
+    -------
+    dict[str, pd.DataFrame]
+        ``date_histogram`` and ``id_histogram`` tables.
+    """
+    dates = list(date_columns)
+    group_columns = [group_by] if isinstance(group_by, str) else list(group_by) if group_by is not None else []
+    retained = set(selected_groups) if selected_groups is not None else None
+    id_rows = id_summary.set_index("column") if not id_summary.empty else pd.DataFrame()
+    id_columns = [column for column in id_rows.index
+                  if id_rows.loc[column, "unique_count"] != id_rows.loc[column, "non_missing_count"]]
+    date_counts: Counter[tuple[str, str | None, int]] = Counter()
+    id_records: list[dict[str, object]] = []
+    for column, row in id_rows.iterrows():
+        if column not in id_columns and pd.notna(row["unique_count"]) and row["unique_count"] > 0:
+            id_records.append({"column": column, "row_count": 1,
+                               "id_count": int(row["unique_count"])})
+
+    usecols = list(dict.fromkeys([*dates, *id_columns, *group_columns]))
+    if usecols:
+        if temp_dir is not None:
+            os.makedirs(temp_dir, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_dir) as scratch_dir:
+            with closing(sqlite3.connect(os.path.join(scratch_dir, "id_counts.sqlite"))) as connection:
+                connection.execute("CREATE TABLE counts (column_name TEXT, id_value TEXT, row_count INTEGER, "
+                                   "PRIMARY KEY (column_name, id_value))")
+                for chunk in load_df(files=files, usecols=usecols, chunk_size=chunk_size):
+                    if group_columns:
+                        if len(group_columns) == 1:
+                            groups = chunk[group_columns[0]].astype("string")
+                        else:
+                            groups = chunk[group_columns].apply(
+                                lambda row: str(tuple(row)), axis=1).astype("string")
+                    for column in dates:
+                        years = pd.to_datetime(chunk[column], errors="coerce").dt.year
+                        if group_columns:
+                            frame = pd.DataFrame({"group": groups, "year": years}).dropna()
+                            if retained is not None:
+                                frame = frame.loc[frame["group"].isin(retained)]
+                            counts = frame.groupby(["group", "year"]).size()
+                            date_counts.update({(column, str(group), int(year)): int(count)
+                                                for (group, year), count in counts.items()})
+                        else:
+                            date_counts.update({(column, None, int(year)): int(count)
+                                                for year, count in years.value_counts().items()})
+                    for column in id_columns:
+                        counts = chunk[column].dropna().astype("string").value_counts()
+                        connection.executemany(
+                            "INSERT INTO counts VALUES (?, ?, ?) "
+                            "ON CONFLICT(column_name, id_value) DO UPDATE SET "
+                            "row_count = row_count + excluded.row_count",
+                            ((column, str(value), int(count)) for value, count in counts.items()),
+                        )
+                connection.commit()
+                for column, row_count, id_count in connection.execute(
+                    "SELECT column_name, row_count, COUNT(*) FROM counts "
+                    "GROUP BY column_name, row_count"
+                ):
+                    id_records.append({"column": column, "row_count": row_count,
+                                       "id_count": id_count})
+
+    date_records = [{"column": column, "group": group, "year": year, "date_count": count}
+                    for (column, group, year), count in date_counts.items()]
+    return {
+        "date_histogram": pd.DataFrame(date_records, columns=["column", "group", "year", "date_count"]),
+        "id_histogram": pd.DataFrame(id_records, columns=["column", "row_count", "id_count"]),
     }

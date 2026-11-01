@@ -1,4 +1,4 @@
-"""Plot a column from its summary statistics."""
+"""Create a Matplotlib figure for each supported column type."""
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -10,89 +10,154 @@ from .summarize_column import (
 )
 
 
+def visualize_binary(values: pd.Series | pd.DataFrame, column_name: str) -> Figure:
+    """Plot negative, positive, and missing counts for a binary column."""
+    summary = (summarize_binary(pd.DataFrame({column_name: values}), [column_name])
+               if isinstance(values, pd.Series) else values)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    if not summary.empty:
+        row = summary.iloc[0]
+        positive = int(row["positive_count"])
+        ax.bar(["Negative", "Positive", "Missing"],
+               [int(row["non_missing_count"]) - positive, positive, int(row["missing_count"])])
+    ax.set_ylabel("Count")
+    ax.set_title(column_name)
+    fig.tight_layout()
+    return fig
+
+
+def visualize_categorical(values: pd.Series | pd.DataFrame, column_name: str,
+                          max_categories: int = 20) -> Figure:
+    """Plot the most frequent values of a categorical column."""
+    if max_categories < 1:
+        raise ValueError("max_categories must be at least 1")
+    summary = (summarize_categorical(pd.DataFrame({column_name: values}), [column_name])
+               if isinstance(values, pd.Series) else values)
+    categories = (summary.dropna(subset=["value"]).nlargest(max_categories, "value_count")
+                  if not summary.empty else summary)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    if not categories.empty:
+        ax.barh(categories["value"].astype(str).iloc[::-1], categories["value_count"].iloc[::-1])
+    ax.set_xlabel("Count")
+    ax.set_title(column_name)
+    fig.tight_layout()
+    return fig
+
+
+def visualize_date(values: pd.Series | pd.DataFrame, column_name: str,
+                   summaries: dict[str, pd.DataFrame] | None = None,
+                   group: str | None = None) -> Figure:
+    """Plot the number of observations in each calendar year."""
+    if isinstance(values, pd.Series):
+        counts = pd.to_datetime(values, errors="coerce").dt.year.value_counts()
+        histogram = pd.DataFrame({"year": counts.index, "date_count": counts.values})
+    else:
+        histogram = pd.DataFrame() if summaries is None else summaries.get("date_histogram", pd.DataFrame())
+        if not histogram.empty:
+            histogram = histogram.loc[histogram["column"].eq(column_name)]
+            if group is not None and "group" in histogram.columns:
+                histogram = histogram.loc[histogram["group"].astype("string").eq(group)]
+    fig, ax = plt.subplots(figsize=(8, 5))
+    if histogram.empty:
+        ax.text(0.5, 0.5, "No date histogram available", ha="center", va="center", transform=ax.transAxes)
+    else:
+        bins = histogram.sort_values("year")
+        ax.bar(bins["year"].astype(int), bins["date_count"].astype(int), width=0.9)
+    ax.set_xlabel("Year")
+    ax.set_ylabel("Number of rows")
+    ax.set_title(column_name)
+    fig.tight_layout()
+    return fig
+
+
+def visualize_id(values: pd.Series | pd.DataFrame, column_name: str,
+                 summaries: dict[str, pd.DataFrame] | None = None,
+                 group: str | None = None) -> Figure:
+    """Plot how many identifiers have each number of associated rows."""
+    if isinstance(values, pd.Series):
+        counts = values.dropna().astype("string").value_counts().value_counts()
+        histogram = pd.DataFrame({"row_count": counts.index, "id_count": counts.values})
+    else:
+        histogram = pd.DataFrame() if summaries is None else summaries.get("id_histogram", pd.DataFrame())
+        if not histogram.empty:
+            histogram = histogram.loc[histogram["column"].eq(column_name)]
+            if group is not None and "group" in histogram.columns:
+                histogram = histogram.loc[histogram["group"].astype("string").eq(group)]
+    fig, ax = plt.subplots(figsize=(8, 5))
+    if histogram.empty:
+        ax.text(0.5, 0.5, "No ID histogram available", ha="center", va="center", transform=ax.transAxes)
+    else:
+        bins = histogram.sort_values("row_count")
+        ax.bar(bins["row_count"].astype(int), bins["id_count"].astype(int), width=0.9)
+        if bins["row_count"].max() > 100:
+            ax.set_xscale("log")
+    ax.set_xlabel("Rows per ID")
+    ax.set_ylabel("Number of IDs")
+    ax.set_title(column_name)
+    fig.tight_layout()
+    return fig
+
+
+def visualize_numerical(values: pd.Series | pd.DataFrame, column_name: str) -> Figure:
+    """Plot a box summary for a numerical column."""
+    summary = (summarize_numerical(pd.DataFrame({column_name: values}), [column_name])
+               if isinstance(values, pd.Series) else values)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    if not summary.empty and pd.notna(summary.iloc[0]["min"]) and pd.notna(summary.iloc[0]["max"]):
+        row = summary.iloc[0]
+        ax.bxp([{"med": row["median"], "q1": row["p25"], "q3": row["p75"],
+                 "whislo": row["min"], "whishi": row["max"], "fliers": []}],
+               showfliers=False)
+        ax.set_xticks([])
+    else:
+        ax.text(0.5, 0.5, "No numeric values", ha="center", va="center", transform=ax.transAxes)
+    ax.set_ylabel("Value")
+    ax.set_title(column_name)
+    fig.tight_layout()
+    return fig
+
+
 def visualize_column(values: pd.Series | pd.DataFrame,
                      column_type: ColumnType | None = None,
                      column_name: str | None = None,
-                     max_categories: int = 20) -> Figure:
-    """Return a plot appropriate for one column.
+                     max_categories: int = 20,
+                     summaries: dict[str, pd.DataFrame] | None = None,
+                     group: str | None = None) -> Figure:
+    """Dispatch a column to its type-specific visualization function.
 
     Arguments
     ---------
     values: pd.Series | pd.DataFrame
-        Raw column values or summary rows for one column.
+        Raw values or summary rows for one column.
     column_type: ColumnType | None (default None)
-        Type of plot to create. Required for summary rows; inferred for a Series.
+        Column type, inferred from a raw Series when omitted.
     column_name: str | None (default None)
-        Column name to show in the plot title.
+        Name displayed in the figure title.
     max_categories: int (default 20)
-        Maximum number of categorical values shown.
+        Maximum categorical values to plot.
+    summaries: dict[str, pd.DataFrame] | None (default None)
+        Related summary tables containing date and ID histograms.
+    group: str | None (default None)
+        Group label for selecting its histogram rows.
 
     Returns
     -------
     Figure
         Matplotlib figure owned by the caller.
     """
-    if max_categories < 1:
-        raise ValueError("max_categories must be at least 1")
-
-    if isinstance(values, pd.Series):
-        name = column_name or str(values.name or "column")
-        kind = column_type or classify_column(name, values)
-        source = pd.DataFrame({name: values})
-        summarize = {
-            "binary": summarize_binary, "categorical": summarize_categorical,
-            "date": summarize_dates, "id": summarize_ids,
-            "numerical": summarize_numerical,
-        }[kind]
-        summary = summarize(source, [name])
-    else:
-        if column_type is None:
-            raise ValueError("column_type is required for summary rows")
-        kind = column_type
-        summary = values
-        name = column_name or (str(summary["column"].iloc[0]) if not summary.empty else "column")
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    if summary.empty:
-        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
-    elif kind == "categorical":
-        categories = summary.dropna(subset=["value"]).nlargest(max_categories, "value_count")
-        ax.barh(categories["value"].astype(str).iloc[::-1], categories["value_count"].iloc[::-1])
-        ax.set_xlabel("Count")
-    elif kind == "binary":
-        row = summary.iloc[0]
-        positive = int(row["positive_count"])
-        non_missing = int(row["non_missing_count"])
-        ax.bar(["Negative", "Positive", "Missing"],
-               [non_missing - positive, positive, int(row["missing_count"])])
-        ax.set_ylabel("Count")
-    elif kind == "numerical":
-        row = summary.iloc[0]
-        if pd.notna(row["min"]) and pd.notna(row["max"]):
-            ax.bxp([{"med": row["median"], "q1": row["p25"], "q3": row["p75"],
-                     "whislo": row["min"], "whishi": row["max"], "fliers": []}],
-                   showfliers=False)
-            ax.set_xticks([])
-            ax.set_ylabel("Value")
-        else:
-            ax.text(0.5, 0.5, "No numeric values", ha="center", va="center", transform=ax.transAxes)
-    elif kind == "date":
-        row = summary.iloc[0]
-        start, end = pd.to_datetime(row["min"]), pd.to_datetime(row["max"])
-        if pd.notna(start) and pd.notna(end):
-            ax.plot([start, end], [0, 0], marker="|")
-            ax.set_yticks([])
-            fig.autofmt_xdate()
-        else:
-            ax.text(0.5, 0.5, "No valid dates", ha="center", va="center", transform=ax.transAxes)
-    elif kind == "id":
-        row = summary.iloc[0]
-        ax.bar(["Unique", "Missing"], [int(row["unique_count"]), int(row["missing_count"])])
-        ax.set_ylabel("Count")
-    else:
-        plt.close(fig)
-        raise ValueError(f"Unsupported column type: {kind}")
-
-    ax.set_title(name)
-    fig.tight_layout()
-    return fig
+    name = column_name or (str(values.name or "column") if isinstance(values, pd.Series)
+                           else str(values["column"].iloc[0]) if not values.empty else "column")
+    kind = column_type or (classify_column(name, values) if isinstance(values, pd.Series) else None)
+    if kind is None:
+        raise ValueError("column_type is required for summary rows")
+    if kind == "binary":
+        return visualize_binary(values, name)
+    if kind == "categorical":
+        return visualize_categorical(values, name, max_categories=max_categories)
+    if kind == "date":
+        return visualize_date(values, name, summaries=summaries, group=group)
+    if kind == "id":
+        return visualize_id(values, name, summaries=summaries, group=group)
+    if kind == "numerical":
+        return visualize_numerical(values, name)
+    raise ValueError(f"Unsupported column type: {kind}")
