@@ -55,8 +55,8 @@ def create_batch_lookup_table(data_dir: str,
     batch_size: int (default 5000)
         Maximum number of distinct identifiers per batch.
     master_file_type: Optional[str] (default None)
-        File type containing all identifiers. Required for
-        lookup creation; omitting it is not implemented.
+        File type containing all identifiers. Required for lookup creation;
+        omitting it is not implemented.
     overwrite: bool (default False)
         Rebuild an existing lookup when true.
     max_workers: Optional[int] (default None)
@@ -83,21 +83,18 @@ def create_batch_lookup_table(data_dir: str,
         return load_df(files=lookup_table_fp, usecols=[batch_by_id, "batch"], logger=log)
 
     # --- 1. Find All Identifiers ---
-    if isinstance(master_file_type, str):
-        all_files: list[str] = get_files(data_dir=data_dir, file_type=master_file_type,
-                                         logger=log, recursive=recursive)
-        if not all_files:
-            raise FileNotFoundError(f"Master file type not found: {master_file_type}")
-
-        all_ids: set = set()
-        for file in all_files:
-            for chunk in load_df(files=file, usecols=[batch_by_id],
-                                 chunk_size=50_000, logger=log):
-                all_ids.update(chunk[batch_by_id].dropna().unique().tolist())
-        ids: np.ndarray = np.array(sorted(all_ids))
-
-    else:
+    if not isinstance(master_file_type, str):
         raise NotImplementedError("Find all patients from all file types.")
+    files: list[str] = get_files(data_dir=data_dir, file_type=master_file_type,
+                                 logger=log, recursive=recursive)
+    if not files:
+        raise FileNotFoundError(f"Master file type not found: {master_file_type}")
+    all_ids: set = set()
+    for file in files:
+        for chunk in load_df(files=file, usecols=[batch_by_id],
+                             chunk_size=50_000, logger=log):
+            all_ids.update(chunk[batch_by_id].dropna().unique().tolist())
+    ids: np.ndarray = np.array(sorted(all_ids))
 
     # --- 2. Map Each Identifier to a Batch ---
     if batch_size <= 0:
@@ -118,7 +115,7 @@ def batch_dataset(data_dir: str,
                   write_dir: str, 
                   batch_by_id: str,
                   batch_size: int = 5_000,
-                  master_file_type: Optional[str] = None, 
+                  master_file_type: Optional[str] = None,
                   lookup_table_fp: Optional[str] = None,
                   keep_file_types: Optional[Collection[str]] = None,
                   overwrite: bool = False,
@@ -175,8 +172,11 @@ def batch_dataset(data_dir: str,
 
     if not isinstance(master_file_type, str):
         raise NotImplementedError("Find all patients from all file types.")
-    master_files: list[str] = get_files(data_dir=data_dir, file_type=master_file_type,
+    master_files: list[str] = get_files(data_dir=data_dir,
+                                        file_type=master_file_type,
                                         logger=log, recursive=recursive)
+    if not master_files:
+        raise FileNotFoundError(f"Master file type not found: {master_file_type}")
     master_inputs = {file: file_signature(file) for file in master_files}
     lookup_marker_fp = os.path.join(cache_dir, f"{batch_by_id}_lookup.json")
     lookup_settings = {"sources": master_inputs, "batch_size": batch_size,

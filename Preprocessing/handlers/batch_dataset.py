@@ -22,7 +22,7 @@ def process_file_type(file_type: str,
     """Write one file type to Parquet files grouped by identifier batch.
 
     Existing matching outputs are removed before processing. Rows whose
-    identifiers absent from ``id_to_batch`` raise an error. If an input lacks
+    identifiers are absent from ``id_to_batch`` are dropped. If an input lacks
     ``batch_by_id``, all its rows are written to one unbatched Parquet file.
 
     Arguments
@@ -47,7 +47,6 @@ def process_file_type(file_type: str,
     Raises
     ------
         FileNotFoundError: If no source files match ``file_type``.
-        ValueError: If a source identifier is absent from the lookup.
         RuntimeError: If an empty batch is needed but no schema was inferred.
     """
 
@@ -77,6 +76,7 @@ def process_file_type(file_type: str,
     schema: pa.Schema | None = None
 
     unbatched_writer: Optional[pq.ParquetWriter] = None
+    dropped_rows: int = 0
     try:
         for file in files:
             chunks_processed: int = 0
@@ -100,8 +100,9 @@ def process_file_type(file_type: str,
                     raise ValueError(f"Mixed identifier columns for {file_type}")
 
                 df["_batch"] = df[batch_by_id].map(id_to_batch)
-                if df["_batch"].isna().any():
-                    raise ValueError(f"{file} contains identifiers absent from the batch lookup")
+                unmatched = df["_batch"].isna()
+                dropped_rows += int(unmatched.sum())
+                df = df.loc[~unmatched].copy()
                 df["_batch"] = df["_batch"].astype("int32")
 
 
@@ -137,6 +138,9 @@ def process_file_type(file_type: str,
 
         if unbatched_writer is not None:
             return
+
+        if dropped_rows:
+            log.warning(f"Dropped {dropped_rows:,} {file_type} rows without a patient batch")
 
         # Create empty files to ensure a file exists for all batches
         written_batches = set(rows_written.keys())
