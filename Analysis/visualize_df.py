@@ -6,7 +6,7 @@ import pandas as pd
 from matplotlib.figure import Figure
 
 from .summarize_column import ColumnType, _COLUMN_TYPES
-from .summarize_df import classify_df
+from .summarize_df import ALL_GROUPS, _configured_subset, _split_columns, classify_df
 from .visualize_column import visualize_column
 
 
@@ -15,7 +15,8 @@ def visualize_df(df: pd.DataFrame | dict[str, pd.DataFrame],
                  group_by: str | Collection[str] | None = None,
                  group_types: list[ColumnType] | Literal["all"] = "all",
                  max_groups: int = 1000,
-                 max_categories: int = 20) -> dict[tuple[str, str | None], Figure]:
+                 max_categories: int = 20,
+                 group_columns: Collection[str] | None = None) -> dict[tuple[str, str | None], Figure]:
     """Return figures keyed by column name and optional group label.
 
     Arguments
@@ -33,6 +34,11 @@ def visualize_df(df: pd.DataFrame | dict[str, pd.DataFrame],
         Maximum number of groups to plot from raw data.
     max_categories: int (default 20)
         Maximum number of values in each categorical plot.
+    group_columns: Collection[str] | None (default None)
+        Raw data only: plot only these columns once per group; every other column,
+        including the grouping columns, gets one figure over all rows (group ``None``).
+        Requires ``group_by`` and cannot be combined with ``group_types``. See
+        ``summarize_df`` for when to use it.
 
     Returns
     -------
@@ -41,7 +47,8 @@ def visualize_df(df: pd.DataFrame | dict[str, pd.DataFrame],
     """
     return dict(iter_visualizations(df=df, configured_col_types=configured_col_types,
                                     group_by=group_by, group_types=group_types,
-                                    max_groups=max_groups, max_categories=max_categories))
+                                    max_groups=max_groups, max_categories=max_categories,
+                                    group_columns=group_columns))
 
 
 def iter_visualizations(df: pd.DataFrame | dict[str, pd.DataFrame],
@@ -49,8 +56,38 @@ def iter_visualizations(df: pd.DataFrame | dict[str, pd.DataFrame],
                         group_by: str | Collection[str] | None = None,
                         group_types: list[ColumnType] | Literal["all"] = "all",
                         max_groups: int = 1000,
-                        max_categories: int = 20) -> Iterator[tuple[tuple[str, str | None], Figure]]:
-    """Yield column figures one at a time so callers can save and close them."""
+                        max_categories: int = 20,
+                        group_columns: Collection[str] | None = None,
+                        ) -> Iterator[tuple[tuple[str, str | None], Figure]]:
+    """Yield column figures one at a time so callers can save and close them.
+
+    Arguments are as in :func:`visualize_df`."""
+    if group_columns is not None:
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError("group_columns applies to raw DataFrames, not summary tables")
+        by_columns = [group_by] if isinstance(group_by, str) else list(group_by) if group_by is not None else None
+        split = _split_columns(df, by_columns, group_columns, group_types)
+        if max_groups < 1:
+            raise ValueError("max_groups must be at least 1")
+        # Unsplit columns (and the grouping columns): one figure each over all rows
+        whole = df.drop(columns=split)
+        yield from iter_visualizations(whole, configured_col_types=_configured_subset(configured_col_types, whole.columns),
+                                       max_categories=max_categories)
+        if not split:
+            return
+        # Split columns: one figure per group, for the most frequent groups
+        column_types = classify_df(df=df[split], configured_col_types=_configured_subset(configured_col_types, split))
+        groups = df.groupby(by_columns, dropna=False, sort=False, observed=True)
+        top_groups = groups.size().sort_values(ascending=False, kind="stable").head(max_groups).index
+        for column, column_type in column_types.items():
+            for key in top_groups:
+                values = groups.get_group((key,) if len(by_columns) == 1 else key)[column]
+                label = key if len(by_columns) == 1 else tuple(key)
+                group = "<missing>" if len(by_columns) == 1 and pd.isna(label) else str(label)
+                yield (column, group), visualize_column(values, column_type=column_type,
+                                                        column_name=column, max_categories=max_categories)
+        return
+
     if isinstance(df, pd.DataFrame):
         column_types = classify_df(df=df, configured_col_types=configured_col_types)
         group_columns = ([group_by] if isinstance(group_by, str)
@@ -88,7 +125,7 @@ def iter_visualizations(df: pd.DataFrame | dict[str, pd.DataFrame],
             column = str(key[0] if isinstance(key, tuple) else key)
             group = None
             if isinstance(key, tuple) and len(key) > 1:
-                group = "<missing>" if pd.isna(key[1]) else str(key[1])
+                group = "<missing>" if pd.isna(key[1]) else None if key[1] == ALL_GROUPS else str(key[1])
             yield (column, group), visualize_column(
                 rows, column_type=column_type, column_name=column,
                 max_categories=max_categories, summaries=summaries, group=group,

@@ -111,6 +111,8 @@ def _summarize_dataset_batch(
     if group_columns is not None:
         group_labels = pd.Series(index=df.index, dtype="string")
         for group, positions in df.groupby(group_columns, dropna=False, sort=False, observed=True).indices.items():
+            # pandas returns a single-column key as a scalar, not a 1-tuple
+            group = group if isinstance(group, tuple) else (group,)
             group_value = group[0] if len(group_columns) == 1 else tuple(
                 value.item() if hasattr(value, "item") else value for value in group
             )

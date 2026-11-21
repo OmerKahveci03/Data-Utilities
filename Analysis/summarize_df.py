@@ -15,6 +15,35 @@ from .summarize_column import (
     summarize_numerical,
 )
 
+# `group` label of rows summarizing a column over every row, when only some columns are
+# split by group (see `group_columns` in summarize_df).
+ALL_GROUPS: str = "<all>"
+
+
+def _split_columns(df: pd.DataFrame, by_columns: list[str] | None,
+                   group_columns: Collection[str], group_types: object) -> list[str]:
+    """ Validate `group_columns` and return the columns to split, excluding the grouping columns. """
+    if by_columns is None:
+        raise ValueError("group_columns requires group_by")
+    if group_types != "all":
+        raise ValueError("Pass either group_columns or group_types, not both")
+    if isinstance(group_columns, str):
+        raise TypeError("group_columns must be a collection of column names, not a string")
+    missing: list[str] = [column for column in group_columns if column not in df.columns]
+    if missing:
+        raise KeyError(f"group_columns are missing from the DataFrame: {missing}")
+    # A grouping column split by itself is one value per group, so it is never split
+    return [column for column in group_columns if column not in by_columns]
+
+
+def _configured_subset(configured_col_types: Optional[dict[ColumnType, Iterable[str]]],
+                       columns: Collection[str]) -> Optional[dict[ColumnType, list[str]]]:
+    """ Restrict a type configuration to the columns of a DataFrame subset. """
+    if configured_col_types is None:
+        return None
+    return {column_type: [column for column in configured if column in columns]
+            for column_type, configured in configured_col_types.items()}
+
 def classify_df(
     df: pd.DataFrame,
     configured_col_types: Optional[dict[ColumnType, Iterable[str]]] = None,
@@ -87,6 +116,7 @@ def summarize_df(
     group_by: str | Collection[str] | None = None,
     group_types: list[ColumnType] | Literal["all"] = "all",
     max_groups: int = 1000,
+    group_columns: Optional[Collection[str]] = None,
 ) -> dict[str, pd.DataFrame]:
     """
     Classify every DataFrame column and run each type-specific summarizer.
@@ -112,6 +142,14 @@ def summarize_df(
         receive one summary for the full DataFrame.
     max_groups: int (default 1000)
         Maximum number of most frequent groups to summarize.
+    group_columns: Optional[Collection[str]] (default None)
+        Stratify only these columns by ``group_by``; every other column is summarized
+        once over all rows, with ``group`` set to ``ALL_GROUPS`` (``"<all>"``). Use this
+        when only some columns depend on the group, e.g. a long table whose ``valuenum``
+        holds a different measurement per ``item``. The grouping columns are never split
+        by themselves, so their own summary compares the groups. Requires ``group_by``
+        and cannot be combined with ``group_types``. With ``entire_dataset``, the
+        ``dataset`` table has one ``"<all>"`` row plus one row per group.
 
     Returns
     -------
@@ -120,6 +158,36 @@ def summarize_df(
         When entire_dataset is True, also contains dataset and columns summaries.
 
     """
+
+    if group_columns is not None:
+        by_columns: list[str] | None = ([group_by] if isinstance(group_by, str)
+                                        else list(group_by) if group_by is not None else None)
+        split: list[str] = _split_columns(df, by_columns, group_columns, group_types)
+        whole: dict[str, pd.DataFrame] = summarize_df(df=df, configured_col_types=configured_col_types,
+                                                      entire_dataset=entire_dataset)
+        if not split:
+            return whole
+        subset: list[str] = [*by_columns, *split]
+        grouped: dict[str, pd.DataFrame] = summarize_df(
+            df=df[subset], configured_col_types=_configured_subset(configured_col_types, subset),
+            entire_dataset=entire_dataset, group_by=group_by, max_groups=max_groups)
+        result: dict[str, pd.DataFrame] = dict(whole)
+        for name in _COLUMN_TYPES:
+            whole_rows: pd.DataFrame = whole[name]
+            if "column" in whole_rows.columns:
+                whole_rows = whole_rows.loc[~whole_rows["column"].isin(split)]
+            group_rows: pd.DataFrame = grouped[name]
+            if "column" in group_rows.columns:
+                group_rows = group_rows.loc[group_rows["column"].isin(split)]
+            result[name] = pd.concat([whole_rows.assign(group=ALL_GROUPS) if not whole_rows.empty else whole_rows,
+                                      group_rows], ignore_index=True)
+        if entire_dataset:
+            result["dataset"] = pd.concat([whole["dataset"].assign(group=ALL_GROUPS), grouped["dataset"]],
+                                          ignore_index=True)
+        for name, frame in result.items():
+            if "group" in frame.columns:
+                result[name] = frame[["group", *(column for column in frame.columns if column != "group")]]
+        return result
 
     column_types: dict[str, ColumnType] = classify_df(df=df, configured_col_types=configured_col_types)
     columns_by_type: dict[ColumnType, list[str]] = {
