@@ -7,7 +7,7 @@ from matplotlib.figure import Figure
 
 from .summarize_column import ColumnType, _COLUMN_TYPES
 from .summarize_df import ALL_GROUPS, _configured_subset, _split_columns, classify_df
-from .visualize_column import visualize_column
+from .visualize_column import visualize_column, visualize_stratified
 
 
 def visualize_df(df: pd.DataFrame | dict[str, pd.DataFrame],
@@ -35,10 +35,11 @@ def visualize_df(df: pd.DataFrame | dict[str, pd.DataFrame],
     max_categories: int (default 20)
         Maximum number of values in each categorical plot.
     group_columns: Collection[str] | None (default None)
-        Raw data only: plot only these columns once per group; every other column,
-        including the grouping columns, gets one figure over all rows (group ``None``).
-        Requires ``group_by`` and cannot be combined with ``group_types``. See
-        ``summarize_df`` for when to use it.
+        Raw data only: stratify these columns by ``group_by``. Each gets ONE figure with
+        a panel per group (see ``visualize_stratified``); every other column, including
+        the grouping columns, gets one figure over all rows. All figures are keyed with
+        group ``None``. Requires ``group_by`` and cannot be combined with
+        ``group_types``. See ``summarize_df`` for when to use it.
 
     Returns
     -------
@@ -75,17 +76,16 @@ def iter_visualizations(df: pd.DataFrame | dict[str, pd.DataFrame],
                                        max_categories=max_categories)
         if not split:
             return
-        # Split columns: one figure per group, for the most frequent groups
+        # Split columns: ONE stratified figure each, with a panel per group (most frequent first)
         column_types = classify_df(df=df[split], configured_col_types=_configured_subset(configured_col_types, split))
-        groups = df.groupby(by_columns, dropna=False, sort=False, observed=True)
-        top_groups = groups.size().sort_values(ascending=False, kind="stable").head(max_groups).index
+        labels = (df[by_columns[0]] if len(by_columns) == 1 else df[by_columns].agg(tuple, axis=1))\
+            .astype("string").fillna("<missing>")
+        order = labels.value_counts(sort=True).head(max_groups).index.tolist()
+        group_name = " | ".join(by_columns)
         for column, column_type in column_types.items():
-            for key in top_groups:
-                values = groups.get_group((key,) if len(by_columns) == 1 else key)[column]
-                label = key if len(by_columns) == 1 else tuple(key)
-                group = "<missing>" if len(by_columns) == 1 and pd.isna(label) else str(label)
-                yield (column, group), visualize_column(values, column_type=column_type,
-                                                        column_name=column, max_categories=max_categories)
+            yield (column, None), visualize_stratified(df[column], labels, column_type=column_type,
+                                                       column_name=column, group_order=order,
+                                                       group_name=group_name, max_categories=max_categories)
         return
 
     if isinstance(df, pd.DataFrame):
