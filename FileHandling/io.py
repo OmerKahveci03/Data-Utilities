@@ -8,6 +8,36 @@ import pyarrow.parquet as pq
 from typing import Optional, Collection, Callable, Iterator
 from ..Logging.convenience import _get_logger
 
+
+def parse_datetimes(values: pd.Series, utc: bool = False) -> pd.Series:
+    """Parse a Series to datetimes without silently losing valid values.
+
+    ``pd.to_datetime`` without a format infers ONE format from the first value, so
+    e.g. ``'2132-05-31 04:36:47.293'`` becomes NaT when the first value has no
+    fractional seconds. Here every value is parsed as ISO 8601 first (fast; optional
+    fractional seconds and time zones are fine), and only the values that fail are
+    retried one by one in any format. Values that are not dates at all become NaT.
+
+    Arguments
+    ---------
+    values: pd.Series
+        Strings, datetimes, or a mix.
+    utc: bool (default False)
+        Return timezone-aware UTC datetimes.
+
+    Returns
+    -------
+        The parsed datetimes, aligned with ``values``.
+    """
+    if pd.api.types.is_datetime64_any_dtype(values):
+        return pd.to_datetime(values, utc=utc) if utc else values
+    parsed: pd.Series = pd.to_datetime(values, errors="coerce", format="ISO8601", utc=utc)
+    retry: pd.Series = parsed.isna() & values.notna()
+    if retry.any():
+        parsed.loc[retry] = pd.to_datetime(values.loc[retry], errors="coerce", format="mixed", utc=utc)
+    return parsed
+
+
 def get_file_types(data_dir: str, 
                    ext: Optional[str] = "parquet", 
                    require_batch_number: bool = True,
@@ -202,7 +232,7 @@ def load_df(files: str | Collection[str],
                 for chunk_number, df in enumerate(chunks, start=1):
                     if parse_dates:
                         for dt_col in parse_dates:
-                            df[dt_col] = pd.to_datetime(df[dt_col], errors="coerce", utc=True)
+                            df[dt_col] = parse_datetimes(df[dt_col], utc=True)
 
                     if callable(filter_func):
                         df = filter_func(df)
@@ -241,7 +271,7 @@ def load_df(files: str | Collection[str],
     # NOTE: Parsing after concat because pd.concat may unparse the column.
     if parse_dates:
         for dt_col in parse_dates:
-            df[dt_col] = pd.to_datetime(df[dt_col], errors="coerce", utc=True)
+            df[dt_col] = parse_datetimes(df[dt_col], utc=True)
     if log.isEnabledFor(logging.DEBUG):
         memory_mb = df.memory_usage(index=True, deep=True).sum() / 1024**2
         log.debug(f"Loaded {len(df):,} rows ({memory_mb:,.1f} MB in memory)")

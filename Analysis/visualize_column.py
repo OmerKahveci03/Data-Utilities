@@ -13,6 +13,7 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 from . import plot_style as style
+from ..FileHandling.io import parse_datetimes
 from .summarize_column import (
     ColumnType, classify_column, summarize_binary, summarize_categorical,
 )
@@ -114,7 +115,7 @@ def visualize_date(values: pd.Series | pd.DataFrame, column_name: str,
     """Plot the number of observations in each calendar year."""
     subtitle = None
     if isinstance(values, pd.Series):
-        dates = pd.to_datetime(values, errors="coerce")
+        dates = parse_datetimes(values)
         counts = dates.dt.year.value_counts()
         histogram = pd.DataFrame({"year": counts.index, "date_count": counts.values})
         if dates.notna().any():
@@ -425,7 +426,7 @@ def visualize_stratified(values: pd.Series,
         for i, group in enumerate(shown):
             series = values.loc[labels.eq(group)]
             if column_type == "date":
-                points = pd.to_datetime(series, errors="coerce").dt.year.value_counts().sort_index()
+                points = parse_datetimes(series).dt.year.value_counts().sort_index()
             else:
                 points = series.dropna().astype("string").value_counts().value_counts().sort_index()
             if points.empty:

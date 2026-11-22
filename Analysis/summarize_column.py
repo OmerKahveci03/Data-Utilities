@@ -10,6 +10,7 @@ Values that cannot be converted by a type-specific summarizer are treated as mis
 import pandas as pd
 
 from typing import Literal, Optional, TypeAlias, TypedDict
+from ..FileHandling.io import parse_datetimes
 
 
 _PERCENTILES: list[float] = [0.01, 0.05, 0.25, 0.50, 0.75, 0.95, 0.99]
@@ -206,7 +207,7 @@ def summarize_dates(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
 
     records: list[dict] = []
     for column in columns:
-        values: pd.Series = pd.to_datetime(df[column], errors="coerce")
+        values: pd.Series = parse_datetimes(df[column])
         records.append({"column": column, **missingness(values=values), "min": values.min(), "max": values.max()})
     return pd.DataFrame(records)
 

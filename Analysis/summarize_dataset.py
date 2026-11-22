@@ -13,7 +13,7 @@ from typing import Callable, Collection, Iterable, Literal, Optional
 
 import pandas as pd
 
-from ..FileHandling.io import get_files, load_df, write_df
+from ..FileHandling.io import get_files, load_df, parse_datetimes, write_df
 from .summarize_column import ColumnType, _COLUMN_TYPES, summarize_numerical
 from .summarize_df import classify_df, summarize_columns, summarize_df
 
@@ -569,7 +569,7 @@ def summarize_distributions(files: Collection[str],
                             groups = chunk[group_columns].apply(
                                 lambda row: str(tuple(row)), axis=1).astype("string")
                     for column in dates:
-                        years = pd.to_datetime(chunk[column], errors="coerce").dt.year
+                        years = parse_datetimes(chunk[column]).dt.year
                         if group_columns:
                             frame = pd.DataFrame({"group": groups, "year": years}).dropna()
                             if retained is not None:
