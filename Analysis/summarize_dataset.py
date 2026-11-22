@@ -35,7 +35,10 @@ def read_dataset_summary(path: str) -> DatasetSummary:
 
 
 def write_dataset_summary(summary: DatasetSummary, path: str) -> str:
-    """Write the provided summary tables to an Excel workbook and return its path."""
+    """Write the provided summary tables to an Excel workbook and return its path.
+
+    Excel cannot store timezone-aware datetimes, so those columns are written as the
+    same wall-clock time without the timezone (the input tables are not modified)."""
 
     if not summary:
         raise ValueError("At least one summary table is required")
@@ -46,7 +49,12 @@ def write_dataset_summary(summary: DatasetSummary, path: str) -> str:
             *sorted(set(summary) - set(DATASET_SUMMARY_NAMES)),
         ]
         for summary_name in ordered_summary_names:
-            summary[summary_name].to_excel(writer, sheet_name=summary_name, index=False)
+            sheet: pd.DataFrame = summary[summary_name]
+            timezone_columns: list = [column for column in sheet.columns
+                                      if isinstance(sheet[column].dtype, pd.DatetimeTZDtype)]
+            if timezone_columns:
+                sheet = sheet.assign(**{column: sheet[column].dt.tz_localize(None) for column in timezone_columns})
+            sheet.to_excel(writer, sheet_name=summary_name, index=False)
     return path
 
 
