@@ -290,8 +290,9 @@ def summarize_columns(
     Returns
     -------
     column_summary: pd.DataFrame
-        One row per column with ``column``, ``column_type``, and numbered example
-        columns from ``example_1`` through ``example_N``.
+        One row per column with ``column``, ``column_type``, ``row_count``,
+        ``missing_count``, ``missing_pct``, and numbered example columns from
+        ``example_1`` through ``example_N``.
     """
 
     if example_count < 0:
@@ -300,12 +301,16 @@ def summarize_columns(
     if missing_columns:
         raise KeyError(f"Columns are missing from the DataFrame: {missing_columns}")
 
-    output_columns: list[str] = ["column", "column_type", *[f"example_{i + 1}" for i in range(example_count)]]
+    output_columns: list[str] = ["column", "column_type", "row_count", "missing_count", "missing_pct",
+                                 *[f"example_{i + 1}" for i in range(example_count)]]
     records: list[dict[str, object]] = []
     for column, column_type in column_types.items():
         # --- Include n unique example values ---
         examples: list[object] = df[column].dropna().astype("string").drop_duplicates().head(example_count).tolist()
-        record: dict[str, object] = {"column": column, "column_type": column_type}
+        missing_count: int = int(df[column].isna().sum())
+        record: dict[str, object] = {"column": column, "column_type": column_type, "row_count": len(df),
+                                     "missing_count": missing_count,
+                                     "missing_pct": 100 * missing_count / len(df) if len(df) else 0.0}
         for i, example in enumerate(examples):
             record[f"example_{i + 1}"] = example
         records.append(record)

@@ -501,10 +501,14 @@ def summarize_dataset(
             batch_count=("batch", "nunique"), row_count=("row_count", "sum"),
             column_count=("column_count", "first"),
         )
-    columns_summary = batch_results[0]["columns"]
-    if group_by is not None:
-        columns_summary = pd.concat([result["columns"] for result in batch_results], ignore_index=True)\
-            .drop_duplicates(subset=["column"])
+    # --- Columns: missingness summed over batches, types and examples from the first batch ---
+    all_columns = pd.concat([result["columns"] for result in batch_results], ignore_index=True)
+    columns_summary = all_columns.drop_duplicates(subset=["column"]).set_index("column")
+    totals = all_columns.groupby("column", sort=False)[["row_count", "missing_count"]].sum()
+    columns_summary[["row_count", "missing_count"]] = totals.loc[columns_summary.index].astype("int64")
+    row_count = columns_summary["row_count"].where(columns_summary["row_count"] > 0)
+    columns_summary["missing_pct"] = (100 * columns_summary["missing_count"] / row_count).fillna(0.0)
+    columns_summary = columns_summary.reset_index()
     return {
         "dataset": dataset_metrics,
         "columns": columns_summary,
